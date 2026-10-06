@@ -41,6 +41,37 @@ export function derivedKey(familyId: string, sha256: string, suffix: string): st
   return path.posix.join('families', familyId, 'derived', sha256.slice(0, 2), `${sha256}${suffix}`);
 }
 
+/**
+ * 冷热层路径：
+ *   热：families/<fid>/objects/<xx>/<sha>.<ext>
+ *   冷：families/<fid>/cold/objects/<xx>/<sha>.<ext>
+ * 派生文件（缩略图/转码/波形）始终留在热层，冷层只放原片。
+ */
+const COLD_SEG = '/cold/';
+
+export function toColdKey(key: string): string {
+  const parts = key.split('/');
+  // families/<fid>/objects/... → families/<fid>/cold/objects/...
+  if (parts.length < 3 || parts[2] !== 'objects') {
+    throw new Error(`非热层原片 key，不能降冷: ${key}`);
+  }
+  parts.splice(2, 0, 'cold');
+  return parts.join('/');
+}
+
+export function toHotKey(key: string): string {
+  const parts = key.split('/');
+  if (parts.length < 4 || parts[2] !== 'cold' || parts[3] !== 'objects') {
+    throw new Error(`非冷层原片 key，不能回暖: ${key}`);
+  }
+  parts.splice(2, 1);
+  return parts.join('/');
+}
+
+export function isColdKey(key: string): boolean {
+  return key.includes(COLD_SEG);
+}
+
 export function absOf(key: string): string {
   const target = path.join(config.STORAGE_ROOT, key);
   const root = path.resolve(config.STORAGE_ROOT);
@@ -119,5 +150,37 @@ export async function moveIntoPlace(tmpPath: string, key: string): Promise<void>
 
 export function tmpDir(): string {
   return path.join(config.STORAGE_ROOT, 'tmp');
+}
+
+/**
+ * 在存储根内把一个 key 搬到另一个 key（热↔冷分层用）。
+ * 目标已存在时视为成功（内容寻址：同 key 即同内容，可能是上次执行中断留下的）。
+ * 跨设备时退化为复制+删除；目标父目录自动创建。
+ */
+export async function moveKey(srcKey: string, dstKey: string): Promise<'moved' | 'already-present'> {
+  const src = absOf(srcKey);
+  const dst = absOf(dstKey);
+  await fsp.mkdir(path.dirname(dst), { recursive: true });
+  try {
+    await fsp.rename(src, dst);
+    return 'moved';
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
+      await fsp.copyFile(src, dst);
+      await fsp.rm(src, { force: true });
+      return 'moved';
+    }
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // 源文件不在：若目标已经在位（中断恢复场景），幂等成功
+      if (await exists(dstKey)) return 'already-present';
+      throw err;
+    }
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST' || (await exists(dstKey))) {
+      // rename 撞目标或目标已在：内容寻址同名即同内容，移除源即可
+      await fsp.rm(src, { force: true });
+      return 'already-present';
+    }
+    throw err;
+  }
 }
 

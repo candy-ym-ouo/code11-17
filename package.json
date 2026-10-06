@@ -25,6 +25,9 @@
     "restore": "bash scripts/restore.sh",
     "backup:drill": "bash scripts/drill.sh",
     "gc": "bash scripts/gc.sh",
+    "storage:tier": "bash scripts/storage.sh tier",
+    "storage:plans": "bash scripts/storage.sh plans",
+    "storage:quota": "bash scripts/storage.sh quota",
     "verify:loop": "bash scripts/verify-loop.sh",
     "test:ui": "node e2e/ui-smoke.mjs"
   },

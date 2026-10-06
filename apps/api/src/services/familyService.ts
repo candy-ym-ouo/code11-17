@@ -5,6 +5,7 @@ import { badRequest, conflict, forbidden, notFound } from '../http/errors';
 import { randomToken, sha256Hex } from '../utils/crypto';
 import * as audit from './auditService';
 import { toMemberDto } from '../serializers';
+import { seedFamilyStorage } from './storageSettingsService';
 
 export interface ActorMeta {
   ip?: string | null;
@@ -30,6 +31,8 @@ export async function createFamily(
       },
     });
     await tx.familyMember.create({ data: { familyId: family.id, userId, role: 'owner' } });
+    // 默认冷热分层/保留策略与默认配额随家庭一起就位（同事务，失败则整体回滚）
+    await seedFamilyStorage(family.id, userId, tx);
     await audit.record(
       {
         familyId: family.id,

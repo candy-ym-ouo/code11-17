@@ -23,6 +23,8 @@ export const ACTIONS = [
   'note:deleteAny',
   'audit:read',
   'share:manage',
+  'storage:read',
+  'storage:manage',
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
@@ -53,6 +55,8 @@ const M: Record<Action, readonly FamilyRole[]> = {
   'note:deleteAny': ['owner', 'admin'],
   'audit:read': ['owner', 'admin'],
   'share:manage': ['owner', 'admin', 'editor'],
+  'storage:read': ['owner', 'admin'],
+  'storage:manage': ['owner', 'admin'],
 };
 
 export function roleCan(role: FamilyRole, action: Action): boolean {

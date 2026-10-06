@@ -6,11 +6,13 @@ import type { ItemMedia } from '@prisma/client';
 import { prisma } from '../db';
 import { AppError, badRequest, notFound, conflict } from '../http/errors';
 import { config } from '../config';
-import { objectKey, exists, moveIntoPlace, remove, statObject, tmpDir } from '../storage/local';
+import { objectKey, exists, moveIntoPlace, remove, statObject, tmpDir, toColdKey } from '../storage/local';
 import { detectFileType, limitForKind } from '../media/sniff';
 import { toMediaDto } from '../serializers';
+import { logger } from '../logger';
 import * as audit from './auditService';
 import { itemWithAccess, type FamilyContext } from './permissionService';
+import { assertUploadWithinQuota, promoteIfCold, touchAccessed } from './storagePlanService';
 
 export interface ActorMeta {
   ip?: string | null;
@@ -61,8 +63,12 @@ export async function uploadMedia(
   const sha = await sha256File(file.path);
   const key = objectKey(ctx.familyId, sha, detected.mime);
 
-  if (await exists(key)) {
-    await fsp.rm(file.path, { force: true }); // 内容寻址命中：同一份文件不重复占盘
+  // 内容寻址命中（热层已有同 sha 原片）不新增物理/逻辑占用，跳过配额。
+  // 冷层里的同名文件也算命中：逻辑上仍是新引用，需要占配额并登记为热引用，
+  // 但文件本身不重复落盘（回暖由读取时按需触发）。
+  const hotHit = await exists(key);
+  if (hotHit) {
+    await fsp.rm(file.path, { force: true }); // 内容寻址命中：同一份文件不重复占盘，也不新增配额占用
   } else {
     await moveIntoPlace(file.path, key);
   }
@@ -71,6 +77,10 @@ export async function uploadMedia(
   const isFirstImage = detected.kind === 'image' && !item.coverMediaId;
 
   const media = await prisma.$transaction(async (tx) => {
+    // 逻辑引用新增（非热层命中）才校验配额；家庭行锁保证并发上传不超卖
+    if (!hotHit) {
+      await assertUploadWithinQuota(tx, ctx.familyId, detected.kind, file.size);
+    }
     const created = await tx.itemMedia.create({
       data: {
         itemId,
@@ -204,8 +214,15 @@ export async function loadMediaForUser(userId: string, ctx: FamilyContext, media
   return media;
 }
 
+/**
+ * 定位媒体文件。raw/download 可能命中冷层原片：
+ *   - 库标记 hot 但物理文件已在冷层（上次降冷中断），尝试回暖后再读；
+ *   - 库标记 cold 则读冷路径，并在同一次请求里触发按需回暖（读一次即热回来）。
+ * 缩略图/波形等派生文件始终在热层。
+ */
 export async function mediaFileTarget(media: ItemMedia, variant: 'raw' | 'thumb' | 'waveform' | 'download') {
-  const key =
+  const isOriginal = variant === 'raw' || variant === 'download';
+  let key =
     variant === 'raw'
       ? media.storageKey
       : variant === 'download'
@@ -214,9 +231,56 @@ export async function mediaFileTarget(media: ItemMedia, variant: 'raw' | 'thumb'
           ? (media.thumbKey ?? media.storageKey)
           : media.waveformKey;
   if (!key) throw notFound('该文件还没有可用产物');
+
+  const fallbackToTranscode = variant === 'download' && media.transcodeKey;
+  if (isOriginal && media.tier === 'cold' && !fallbackToTranscode) {
+    const coldKey = key.startsWith('families/') && !key.includes('/cold/') ? toColdKey(key) : key;
+    let stat = await statObject(coldKey);
+    if (!stat && coldKey !== key) stat = await statObject(key);
+    if (!stat) throw notFound('文件已不存在');
+    // 冷文件被读取：异步回暖（咨询锁保证与降冷互斥），不阻塞本次播放
+    void promoteIfCold({ ...media, storageKey: key })
+      .then((r) => {
+        if (r === 'promoted') logger.info({ mediaId: media.id }, '冷层文件已按需回暖');
+      })
+      .catch((err) => logger.warn({ mediaId: media.id, err: err instanceof Error ? err.message : err }, '冷文件回暖失败'));
+    void touchAccessed(media.id);
+    return {
+      key: coldKey,
+      size: stat.size,
+      mimeType: media.mimeType,
+    };
+  }
+
+  if (isOriginal && media.tier === 'hot') {
+    let stat = await statObject(key);
+    if (!stat) {
+      // 物理层与库不一致（降冷后库未更新）：尝试冷路径并修复
+      const coldKey = toColdKey(key);
+      const coldStat = await statObject(coldKey);
+      if (coldStat) {
+        await promoteIfCold({ ...media, tier: 'cold', storageKey: key }).catch(() => undefined);
+        stat = await statObject(key);
+        if (!stat) return { key: coldKey, size: coldStat.size, mimeType: media.mimeType };
+      }
+    }
+    if (!stat) throw notFound('文件已不存在');
+    if (variant === 'raw') void touchAccessed(media.id);
+    return { key, size: stat.size, mimeType: media.mimeType };
+  }
+
   const stat = await statObject(key);
   if (!stat) throw notFound('文件已不存在');
-  return { key, size: stat.size, mimeType: variant === 'thumb' && media.thumbKey ? 'image/webp' : variant === 'download' && media.transcodeKey ? 'audio/mpeg' : media.mimeType };
+  return {
+    key,
+    size: stat.size,
+    mimeType:
+      variant === 'thumb' && media.thumbKey
+        ? 'image/webp'
+        : variant === 'download' && media.transcodeKey
+          ? 'audio/mpeg'
+          : media.mimeType,
+  };
 }
 
 export { enqueue };

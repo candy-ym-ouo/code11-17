@@ -112,6 +112,15 @@ export const ACTION_LABELS: Record<string, string> = {
   'share.revoke': '撤销分享链接',
   'export.create': '发起导出',
   'export.download': '下载导出包',
+  'storage.policy_update': '修改存储保留策略',
+  'storage.quota_update': '修改存储配额',
+  'storage.plan_create': '生成清理预演单',
+  'storage.plan_apply': '执行清理预演单',
+  'storage.plan_discard': '作废清理预演单',
+  'storage.demote': '媒体降冷',
+  'storage.promote': '冷媒体回暖',
+  'storage.purge': '彻底删除过期媒体',
+  'storage.unlink': '回收无引用文件',
   'access.denied': '越权访问被拒',
 };
 

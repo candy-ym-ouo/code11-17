@@ -16,6 +16,7 @@ import { PersonDetailPage } from '../features/people/PersonDetailPage';
 import { MembersPage } from '../features/members/MembersPage';
 import { AuditPage } from '../features/audit/AuditPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
+import { StoragePage } from '../features/storage/StoragePage';
 import { TrashPage } from '../features/items/TrashPage';
 import { ShareViewPage } from '../features/share/ShareViewPage';
 
@@ -90,6 +91,14 @@ export function App() {
           element={
             <RequireFamily roles={['owner', 'admin']}>
               <TrashPage />
+            </RequireFamily>
+          }
+        />
+        <Route
+          path="storage"
+          element={
+            <RequireFamily roles={['owner', 'admin']}>
+              <StoragePage />
             </RequireFamily>
           }
         />

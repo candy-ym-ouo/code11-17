@@ -54,6 +54,15 @@ const envSchema = z.object({
   WORKER_POLL_MS: z.coerce.number().int().min(200).default(2000),
   TRASH_RETENTION_DAYS: z.coerce.number().int().min(1).default(30),
   EXPORT_RETENTION_DAYS: z.coerce.number().int().min(1).default(7),
+  /** 新家庭默认热层/总配额（字节），0 表示不限；仅在建家庭时写入，之后以 storage_quotas 表为准 */
+  STORAGE_DEFAULT_HOT_QUOTA_BYTES: z.coerce.number().int().min(0).default(0),
+  STORAGE_DEFAULT_TOTAL_QUOTA_BYTES: z.coerce.number().int().min(0).default(0),
+  /** 上传时是否硬拦截超配额（false 时只记录告警，家庭管理员自行清理） */
+  STORAGE_QUOTA_ENFORCE_UPLOAD: boolish(true),
+  /** 清理预演单有效期（小时），过期单不能执行，必须重新预演 */
+  STORAGE_PLAN_TTL_HOURS: z.coerce.number().int().min(1).default(24),
+  /** 访问时间节流：同文件至少间隔这么久才回写 last_accessed_at，避免读放大 */
+  STORAGE_ACCESS_TOUCH_MIN_MS: z.coerce.number().int().min(0).default(6 * 3_600_000),
 
   PUBLIC_SIGNUP: boolish(false),
   SERVE_WEB: boolish(true),

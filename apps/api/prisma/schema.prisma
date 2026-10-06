@@ -66,10 +66,24 @@ enum MediaKind {
   document
 }
 
+// 存储层：hot=在线热层（families/<fid>/objects），cold=冷层（families/<fid>/cold/objects）。
+enum MediaTier {
+  hot
+  cold
+}
+
 enum MediaStatus {
   processing
   ready
   failed
+}
+
+// 清理预演单生命周期：open 可执行，applied 已执行，failed 执行中断，expired 已过宽限期。
+enum StoragePlanStatus {
+  open
+  applied
+  failed
+  expired
 }
 
 enum NoteType {
@@ -98,6 +112,7 @@ enum JobType {
   export_build
   trash_purge
   storage_gc
+  storage_tier
 }
 
 enum JobStatus {
@@ -146,6 +161,9 @@ model Family {
   shareLinks ShareLink[]
   auditLogs  AuditLog[]
   settings   Setting[]
+  storagePolicies StoragePolicy[]
+  storageQuotas   StorageQuota[]
+  storagePlans    StoragePlan[]
 
   @@map("families")
 }
@@ -286,6 +304,9 @@ model ItemMedia {
   transcript  String?
   sortOrder   Int         @default(0) @map("sort_order")
   lastError   String?     @map("last_error")
+  tier        MediaTier   @default(hot)
+  tieredAt    DateTime?   @map("tiered_at")
+  lastAccessedAt DateTime @default(now()) @map("last_accessed_at")
   createdBy   String      @map("created_by")
   createdAt   DateTime    @default(now()) @map("created_at")
   deletedAt   DateTime?   @map("deleted_at")
@@ -294,6 +315,7 @@ model ItemMedia {
 
   @@index([itemId, sortOrder])
   @@index([sha256])
+  @@index([tier, lastAccessedAt])
   @@map("item_media")
 }
 
@@ -443,4 +465,65 @@ model Setting {
 
   @@id([familyId, key])
   @@map("settings")
+}
+
+// 按媒体类型的冷热分层与保留策略。每个家庭固定三行（image/audio/document），
+// 由首次访问时按默认值补齐；更新走同事务审计，且无缓存，保存后对下一次规划/上传即时生效。
+model StoragePolicy {
+  id               String    @id @default(cuid())
+  familyId         String    @map("family_id")
+  kind             MediaKind
+  // 热层闲置多少天降冷；null=该类型不自动降冷
+  hotMaxIdleDays   Int?      @map("hot_max_idle_days")
+  // 软删（回收站）后保留多少天再彻底删除；null=永久保留
+  coldRetentionDays Int?     @map("cold_retention_days")
+  // 受保护类型：永不自动降冷、永不自动删除，配额超标也豁免
+  protected        Boolean  @default(false)
+  updatedBy        String    @map("updated_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, kind])
+  @@map("storage_policies")
+}
+
+// 家庭存储配额。每家庭一行（不存在则沿用系统默认）。
+// hotBytesLimit：热层上限，超标自动触发「降冷」而不是删除；
+// totalBytesLimit：总逻辑上限，超标只拦截新上传并告警，不自动动现有数据。
+model StorageQuota {
+  familyId        String    @id @map("family_id")
+  hotBytesLimit   BigInt?   @map("hot_bytes_limit")
+  totalBytesLimit BigInt?   @map("total_bytes_limit")
+  updatedBy       String    @map("updated_by")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@map("storage_quotas")
+}
+
+// 清理预演单：plan 动作清单的持久化快照。执行前必须重新校验（文件仍存在、
+// 行未变化），防止「预演后、执行前」文件被改动造成误删。
+model StoragePlan {
+  id           String           @id @default(cuid())
+  familyId     String           @map("family_id")
+  status       StoragePlanStatus @default(open)
+  trigger      String           // daily_maintenance | quota_change | manual | api
+  actions      Json
+  impact       Json
+  result       Json?
+  appliedBy    String?          @map("applied_by")
+  appliedAt    DateTime?        @map("applied_at")
+  expiresAt    DateTime         @map("expires_at")
+  createdBy    String           @map("created_by")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId, status, createdAt])
+  @@map("storage_plans")
 }

@@ -164,6 +164,34 @@ export type CreateInviteInput = z.infer<typeof createInviteSchema>;
 export type PersonInput = z.infer<typeof personSchema>;
 export type CreateShareLinkInput = z.infer<typeof createShareLinkSchema>;
 
+const daysField = z.number().int().min(1).max(36_500).nullable();
+export const updateStoragePolicySchema = z
+  .object({
+    hotMaxIdleDays: daysField.optional(),
+    coldRetentionDays: daysField.optional(),
+    protected: z.boolean().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, '至少要提供一个要修改的字段');
+
+/** 配额字段：省略=保持不变；null=取消限制；数字=字节数（上限 1 PiB）。 */
+export const updateStorageQuotaSchema = z
+  .object({
+    hotBytesLimit: z.number().int().min(0).max(2 ** 50).nullable().optional(),
+    totalBytesLimit: z.number().int().min(0).max(2 ** 50).nullable().optional(),
+    /** 保存后是否立即做一次分层收敛（把新配额落地） */
+    reconcile: z.boolean().optional(),
+    reason: z.string().trim().max(200).optional(),
+  })
+  .refine((v) => v.hotBytesLimit !== undefined || v.totalBytesLimit !== undefined, {
+    message: '至少要提供 hotBytesLimit 或 totalBytesLimit',
+  });
+
+export const createStoragePlanSchema = z.object({
+  /** 单批动作上限（1–10000），防止一次性搬动过多文件 */
+  maxActions: z.number().int().min(1).max(10_000).optional(),
+  reason: z.string().trim().max(200).optional(),
+});
+
 /** 去 HTML 标签，得到用于检索的纯文本（服务端还会用 DOMPurify 做一次白名单净化）。 */
 export function htmlToText(html: string | null | undefined): string {
   if (!html) return '';

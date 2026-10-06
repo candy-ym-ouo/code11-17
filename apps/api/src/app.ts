@@ -20,6 +20,7 @@ import { shareLinksRouter } from './routes/shareLinks';
 import { exportsRouter } from './routes/exports';
 import { invitesRouter } from './routes/invites';
 import { publicRouter } from './routes/public';
+import { storageRouter } from './routes/storage';
 import { prisma } from './db';
 import { exists, ensureDirs, writeJson } from './storage/local';
 import { hasFfmpeg } from './media/audio';
@@ -131,6 +132,7 @@ export function createApp() {
   app.use('/api/v1/families/:fid/exports', csrfGuard, attachUser, exportsRouter);
   app.use('/api/v1/invites', csrfGuard, attachUser, invitesRouter);
   app.use('/api/v1/public', csrfGuard, attachUser, publicRouter);
+  app.use('/api/v1/families/:fid/storage', csrfGuard, attachUser, storageRouter);
 
   /**
    * 前端静态资源：pnpm build 之后，API 可以直接把 apps/web/dist 托管出去，
