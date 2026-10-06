@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { readStream } from '../storage/local';
+import type { StorageTier } from '@heirloom/shared';
 
 interface SendOptions {
   key: string;
@@ -7,6 +8,7 @@ interface SendOptions {
   mimeType: string;
   filename: string;
   download?: boolean;
+  tier?: StorageTier;
 }
 
 /**
@@ -14,13 +16,14 @@ interface SendOptions {
  * 只允许单段 range，多段（multipart/byteranges）回退为整文件，够用且实现简单。
  */
 export function sendStoredFile(req: Request, res: Response, opts: SendOptions): void {
-  const { key, size, mimeType, filename, download } = opts;
+  const { key, size, mimeType, filename, download, tier = 'hot' } = opts;
   const disposition = `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(filename)}`;
 
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Content-Type', mimeType);
   res.setHeader('Content-Disposition', disposition);
   res.setHeader('Cache-Control', 'private, max-age=3600');
+  if (tier === 'cold') res.setHeader('X-Storage-Tier', 'cold');
 
   const range = req.header('range');
   if (range) {
@@ -39,7 +42,7 @@ export function sendStoredFile(req: Request, res: Response, opts: SendOptions): 
         res.status(206);
         res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
         res.setHeader('Content-Length', String(end - start + 1));
-        readStream(key, { start, end }).pipe(res);
+        readStream(key, { start, end }, tier).pipe(res);
         return;
       }
       res.status(416).setHeader('Content-Range', `bytes */${size}`);
@@ -49,6 +52,5 @@ export function sendStoredFile(req: Request, res: Response, opts: SendOptions): 
   }
 
   res.setHeader('Content-Length', String(size));
-  readStream(key).pipe(res);
+  readStream(key, undefined, tier).pipe(res);
 }
-

@@ -6,6 +6,7 @@ export type FamilyRole = 'owner' | 'admin' | 'editor' | 'contributor' | 'viewer'
 export type PersonRole = 'source' | 'gifted' | 'inherited' | 'owner' | 'mentioned';
 export type MediaKind = 'image' | 'audio' | 'document';
 export type MediaStatus = 'processing' | 'ready' | 'failed';
+export type StorageTier = 'hot' | 'cold';
 
 export interface User {
   id: string;
@@ -46,6 +47,7 @@ export interface Media {
   sortOrder: number;
   hasThumb: boolean;
   hasWaveform: boolean;
+  tier: StorageTier;
   rawUrl: string;
   thumbUrl: string | null;
   waveformUrl: string | null;
@@ -188,5 +190,76 @@ export interface FamilyStats {
 export interface Page<T> {
   items: T[];
   nextCursor: string | null;
+}
+
+export interface StorageOverview {
+  quota: { quotaBytes: number | null; warnRatio: number; isDefault: boolean };
+  usage: {
+    logicalBytes: number;
+    physicalBytes: number;
+    mediaCount: number;
+    trashBytes: number;
+    trashCount: number;
+    bytesByKind: Partial<Record<MediaKind, number>>;
+    countByKind: Partial<Record<MediaKind, number>>;
+    bytesByTier: Partial<Record<StorageTier, number>>;
+    countByTier: Partial<Record<StorageTier, number>>;
+  };
+  state: 'ok' | 'warning' | 'over';
+}
+
+export interface StoragePolicy {
+  kind: MediaKind;
+  hotDays: number | null;
+  maxAgeDays: number | null;
+  onlyArchived: boolean;
+  enabled: boolean;
+  isDefault: boolean;
+  updatedAt: string | null;
+}
+
+export interface CleanupRunSummary {
+  id: string;
+  status: 'preview' | 'pending' | 'approved' | 'canceled' | 'expired';
+  note: string | null;
+  totalFiles: number;
+  totalBytes: number;
+  tierFiles: number;
+  tierBytes: number;
+  deleteFiles: number;
+  deleteBytes: number;
+  result: { done?: number; skipped?: number; failed?: number; reclaimedBytes?: number } | null;
+  createdAt: string;
+  expiresAt: string | null;
+  executedAt: string | null;
+}
+
+export interface CleanupPreview {
+  run: CleanupRunSummary;
+  affectedKeys: {
+    storageKey: string;
+    kind: MediaKind;
+    action: 'tier' | 'delete';
+    bytes: number;
+    reason: string;
+    refCount: number;
+    items: { mediaId: string; itemId: string; itemTitle: string }[];
+  }[];
+}
+
+export interface CleanupDetail extends CleanupRunSummary {
+  items: {
+    id: string;
+    mediaId: string;
+    itemId: string;
+    kind: MediaKind;
+    action: 'tier' | 'delete';
+    byteSize: number;
+    reason: string;
+    state: string;
+    detail: string | null;
+    originalName: string;
+    tier: StorageTier;
+  }[];
 }
 

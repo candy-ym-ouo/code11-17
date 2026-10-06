@@ -11,6 +11,7 @@ import { detectFileType, limitForKind } from '../media/sniff';
 import { toMediaDto } from '../serializers';
 import * as audit from './auditService';
 import { itemWithAccess, type FamilyContext } from './permissionService';
+import { chargeUpload, lockFamilyStorage } from './quotaService';
 
 export interface ActorMeta {
   ip?: string | null;
@@ -70,6 +71,12 @@ export async function uploadMedia(
   const maxSort = await prisma.itemMedia.aggregate({ where: { itemId }, _max: { sortOrder: true } });
   const isFirstImage = detected.kind === 'image' && !item.coverMediaId;
 
+  // 配额判定在事务内、持家庭存储锁完成；去重命中不收费。超限会在这里抛 507
+  const quotaCheck = await prisma.$transaction(async (tx) => {
+    await lockFamilyStorage(ctx.familyId, tx);
+    return chargeUpload({ familyId: ctx.familyId, bytes: file.size, storageKey: key, tx });
+  });
+
   const media = await prisma.$transaction(async (tx) => {
     const created = await tx.itemMedia.create({
       data: {
@@ -104,7 +111,14 @@ export async function uploadMedia(
         action: 'media.upload',
         targetType: 'item',
         targetId: itemId,
-        diff: { mediaId: created.id, kind: detected.kind, bytes: file.size, sha256: sha } as never,
+        diff: {
+          mediaId: created.id,
+          kind: detected.kind,
+          bytes: file.size,
+          sha256: sha,
+          chargedToQuota: quotaCheck.charged,
+          usageBytes: Number(quotaCheck.usageBytes),
+        } as never,
         ...meta,
       },
       tx,
@@ -112,7 +126,8 @@ export async function uploadMedia(
     return created;
   });
 
-  return toMediaDto(media, ctx.familyId);
+  const dto = toMediaDto(media, ctx.familyId);
+  return { ...dto, quotaWarning: quotaCheck.warning, usageBytes: Number(quotaCheck.usageBytes), quotaBytes: quotaCheck.quotaBytes === null ? null : Number(quotaCheck.quotaBytes) };
 }
 
 export async function listItemMedia(userId: string, ctx: FamilyContext, itemId: string) {
@@ -205,6 +220,8 @@ export async function loadMediaForUser(userId: string, ctx: FamilyContext, media
 }
 
 export async function mediaFileTarget(media: ItemMedia, variant: 'raw' | 'thumb' | 'waveform' | 'download') {
+  // 派生件（缩略图/波形/音频转码）始终留在热层；只有原始件会降到冷层
+  const derivedTier: 'hot' = 'hot';
   const key =
     variant === 'raw'
       ? media.storageKey
@@ -214,9 +231,25 @@ export async function mediaFileTarget(media: ItemMedia, variant: 'raw' | 'thumb'
           ? (media.thumbKey ?? media.storageKey)
           : media.waveformKey;
   if (!key) throw notFound('该文件还没有可用产物');
-  const stat = await statObject(key);
-  if (!stat) throw notFound('文件已不存在');
-  return { key, size: stat.size, mimeType: variant === 'thumb' && media.thumbKey ? 'image/webp' : variant === 'download' && media.transcodeKey ? 'audio/mpeg' : media.mimeType };
+  // 只有「取原始件/无转码回落原始件」且记录标记冷层时，才去冷盘读
+  const isRawObject = key === media.storageKey;
+  const tier = isRawObject ? media.tier : derivedTier;
+  const stat = await statObject(key, tier);
+  if (!stat) {
+    // 记录与磁盘不一致时给出可操作的错误（冷盘未挂载/文件被外部清理）
+    throw notFound(tier === 'cold' ? '冷层文件当前不可读（冷盘可能未挂载），请先取回或稍后重试' : '文件已不存在');
+  }
+  return {
+    key,
+    size: stat.size,
+    tier,
+    mimeType:
+      variant === 'thumb' && media.thumbKey
+        ? 'image/webp'
+        : variant === 'download' && media.transcodeKey
+          ? 'audio/mpeg'
+          : media.mimeType,
+  };
 }
 
 export { enqueue };

@@ -154,6 +154,43 @@ export const updateMediaSchema = z.object({
   setCover: z.boolean().optional(),
 });
 
+/** 配额：GB 为单位输入（家庭场景直觉友好），null/0 表示不限制；后端换算成字节。 */
+export const updateQuotaSchema = z.object({
+  quotaGb: z.number().min(0).max(1_000_000).nullable(),
+  warnRatio: z.number().min(0.5).max(1).optional(),
+});
+
+const daysField = z.number().int().min(0).max(36_500).nullable();
+
+export const policyInputSchema = z.object({
+  kind: z.enum(MEDIA_KINDS),
+  hotDays: daysField,
+  maxAgeDays: daysField,
+  onlyArchived: z.boolean(),
+  enabled: z.boolean(),
+});
+
+export const updatePoliciesSchema = z.object({
+  policies: z.array(policyInputSchema).min(1).max(3),
+});
+
+/** 生成清理预演：可指定只评估某些媒体类型；note 会写入运行记录便于辨认。 */
+export const cleanupPreviewSchema = z.object({
+  kinds: z.array(z.enum(MEDIA_KINDS)).min(1).max(3).optional(),
+  note: optionalText(120),
+});
+
+export const approveCleanupSchema = z.object({
+  /** 预演令牌（运行记录 id）。执行时严格按该计划逐条处理，不重新挑选文件。 */
+  runId: z.string().cuid(),
+  /** 二次确认文案，防止误触。 */
+  confirm: z.literal('清理'),
+});
+
+export const cancelCleanupSchema = z.object({
+  runId: z.string().cuid(),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type CreateItemInput = z.infer<typeof createItemSchema>;

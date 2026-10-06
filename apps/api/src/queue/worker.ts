@@ -7,8 +7,10 @@ import { processImage } from '../media/image';
 import { processAudio } from '../media/audio';
 import { inspectDocument } from '../media/document';
 import { putBuffer, remove } from '../storage/local';
+import type { StorageTier } from '@heirloom/shared';
 import { makeTmpPath } from '../services/mediaService';
 import { buildExportZip } from '../services/exportService';
+import { executeRun, restoreMediaToHot, runAutoTierSweep } from '../services/cleanupService';
 
 type Handler = (job: Job) => Promise<Record<string, unknown>>;
 
@@ -99,9 +101,16 @@ async function handleTrashPurge(): Promise<Record<string, unknown>> {
   });
   let removed = 0;
   for (const item of expired) {
-    const keys = item.media.flatMap((m) => [m.storageKey, m.thumbKey, m.largeKey, m.transcodeKey, m.waveformKey]);
+    // 原始件可能已降到冷层；派生件（缩略图/转码/波形）始终在热层
+    const rawKeys = item.media.map((m) => m.storageKey);
+    const derivedKeys = item.media.flatMap((m) => [m.thumbKey, m.largeKey, m.transcodeKey, m.waveformKey]).filter(Boolean);
     await prisma.item.delete({ where: { id: item.id } });
-    await Promise.all(keys.filter(Boolean).map((k) => remove(k!).catch(() => undefined)));
+    await Promise.all([
+      ...rawKeys.flatMap((k) =>
+        (['hot', 'cold'] as StorageTier[]).map((tier) => remove(k, tier).catch(() => undefined)),
+      ),
+      ...derivedKeys.map((k) => remove(k!).catch(() => undefined)),
+    ]);
     removed += 1;
   }
   return { removed, cutoff: cutoff.toISOString() };
@@ -118,11 +127,12 @@ async function handleStorageGc(): Promise<Record<string, unknown>> {
   }
 
   const root = config.STORAGE_ROOT;
+  const coldRoot = config.COLD_STORAGE_ROOT;
   let scanned = 0;
   let deleted = 0;
   const cutoff = Date.now() - 24 * 3600 * 1000;
 
-  async function walk(dir: string): Promise<void> {
+  async function walk(dir: string, base: string, allowTmp: boolean): Promise<void> {
     let entries: Dirent[];
     try {
       entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -132,12 +142,13 @@ async function handleStorageGc(): Promise<Record<string, unknown>> {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === 'tmp') continue; // 临时目录单独处理
-        await walk(full);
+        if (!allowTmp && entry.name === 'tmp') continue; // 临时目录单独处理
+        await walk(full, base, allowTmp);
         continue;
       }
       scanned += 1;
-      const key = path.relative(root, full).split(path.sep).join('/');
+      // key 相对「本次遍历的层根」计算，避免热冷根路径互为前缀时判错
+      const key = path.relative(base, full).split(path.sep).join('/');
       if (referenced.has(key)) continue;
       const stat = await fsp.stat(full).catch(() => null);
       if (!stat || stat.mtimeMs > cutoff) continue;
@@ -145,7 +156,8 @@ async function handleStorageGc(): Promise<Record<string, unknown>> {
       deleted += 1;
     }
   }
-  await walk(root);
+  await walk(root, root, false);
+  await walk(coldRoot, coldRoot, true);
 
   // 临时目录里超过 24 小时的残留（中断的上传）直接清掉
   const tmp = path.join(root, 'tmp');
@@ -175,13 +187,40 @@ async function handleStorageGc(): Promise<Record<string, unknown>> {
   return { scanned, deleted };
 }
 
+/** 冷层媒体被访问后的自动取回（后台搬回热盘，不阻塞当次播放）。 */
+async function handleMediaRestore(job: Job): Promise<Record<string, unknown>> {
+  const { mediaId, familyId, requestedBy } = job.payload as {
+    mediaId: string;
+    familyId: string;
+    requestedBy?: string;
+  };
+  const r = await restoreMediaToHot(requestedBy ?? 'system', familyId, mediaId, { automatic: true });
+  return { moved: r.moved, bytes: r.bytes };
+}
+
 const HANDLERS: Record<string, Handler> = {
   media_thumbnail: handleThumbnail,
   media_waveform: handleWaveform,
   export_build: handleExport,
   trash_purge: handleTrashPurge,
   storage_gc: handleStorageGc,
+  storage_tier: handleStorageTier,
+  storage_purge: handleStoragePurge,
+  media_restore: handleMediaRestore,
 };
+
+/** 每日自动降冷：非破坏性，只把符合策略的老媒体搬到冷层（删除永远需要人工预演+确认）。 */
+async function handleStorageTier(): Promise<Record<string, unknown>> {
+  return runAutoTierSweep();
+}
+
+/** 执行一份已确认的清理计划（可能含物理删除）。 */
+async function handleStoragePurge(job: Job): Promise<Record<string, unknown>> {
+  const { runId } = job.payload as { runId: string };
+  if (!runId) throw new Error('storage_purge 任务缺少 runId');
+  const r = await executeRun(runId);
+  return { done: r.done, skipped: r.skipped, failed: r.failed, reclaimedBytes: Number(r.reclaimedBytes) };
+}
 
 /** 原子领取一个任务：UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)。 */
 async function claimJob(): Promise<Job | null> {
@@ -259,12 +298,13 @@ export function startWorker(): () => void {
   };
   timer = setTimeout(tick, 1000);
 
-  // 每日维护任务：回收站清理 + 孤儿文件回收；重复入队是幂等的，这里只保证每天至少跑一次
+  // 每日维护任务：回收站清理 + 孤儿文件回收 + 自动降冷；重复入队是幂等的，这里只保证每天至少跑一次
   const daily = setInterval(() => {
-    void prisma.job
-      .create({ data: { type: 'trash_purge', payload: {} as never } })
-      .then(() => prisma.job.create({ data: { type: 'storage_gc', payload: {} as never } }))
-      .catch((err) => logger.error({ err }, '每日维护任务入队失败'));
+    void Promise.all([
+      prisma.job.create({ data: { type: 'trash_purge', payload: {} as never } }),
+      prisma.job.create({ data: { type: 'storage_gc', payload: {} as never } }),
+      prisma.job.create({ data: { type: 'storage_tier', payload: {} as never } }),
+    ]).catch((err) => logger.error({ err }, '每日维护任务入队失败'));
   }, DAILY);
 
   logger.info({ pollMs: config.WORKER_POLL_MS }, '后台任务 worker 已启动');

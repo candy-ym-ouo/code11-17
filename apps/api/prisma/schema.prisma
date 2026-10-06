@@ -98,6 +98,9 @@ enum JobType {
   export_build
   trash_purge
   storage_gc
+  storage_tier
+  storage_purge
+  media_restore
 }
 
 enum JobStatus {
@@ -105,6 +108,27 @@ enum JobStatus {
   running
   done
   failed
+}
+
+/// 媒体所处存储层：hot=本地热盘（可直接流式访问），cold=冷层（本地归档区，按需取回）
+enum StorageTier {
+  hot
+  cold
+}
+
+/// 清理动作的生命周期：预演(preview) → 已确认执行(approved) → 已完成(done) / 已取消(canceled) / 已过期(expired)
+enum CleanupStatus {
+  preview
+  approved
+  done
+  canceled
+  expired
+}
+
+/// 清理计划中每个媒体的命运：tier=降到冷层，delete=彻底删除原始文件（派生件随之回收）
+enum CleanupAction {
+  tier
+  delete
 }
 
 model User {
@@ -129,23 +153,26 @@ model User {
 }
 
 model Family {
-  id                   String     @id @default(cuid())
-  name                 String
-  description          String?
-  defaultVisibility    Visibility @default(family) @map("default_visibility")
-  allowViewerComment   Boolean    @default(false) @map("allow_viewer_comment")
-  createdBy            String     @map("created_by")
-  createdAt            DateTime   @default(now()) @map("created_at")
-  updatedAt            DateTime   @updatedAt @map("updated_at")
-  deletedAt            DateTime?  @map("deleted_at")
+  id                 String     @id @default(cuid())
+  name               String
+  description        String?
+  defaultVisibility  Visibility @default(family) @map("default_visibility")
+  allowViewerComment Boolean    @default(false) @map("allow_viewer_comment")
+  createdBy          String     @map("created_by")
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+  deletedAt          DateTime?  @map("deleted_at")
 
-  members    FamilyMember[]
-  invites    Invite[]
-  people     Person[]
-  items      Item[]
-  shareLinks ShareLink[]
-  auditLogs  AuditLog[]
-  settings   Setting[]
+  members         FamilyMember[]
+  invites         Invite[]
+  people          Person[]
+  items           Item[]
+  shareLinks      ShareLink[]
+  auditLogs       AuditLog[]
+  settings        Setting[]
+  storagePolicies StoragePolicy[]
+  storageQuota    StorageQuota?
+  cleanups        CleanupRun[]
 
   @@map("families")
 }
@@ -167,17 +194,17 @@ model FamilyMember {
 }
 
 model Invite {
-  id        String    @id @default(cuid())
-  familyId  String    @map("family_id")
-  codeHash  String    @unique @map("code_hash")
+  id        String     @id @default(cuid())
+  familyId  String     @map("family_id")
+  codeHash  String     @unique @map("code_hash")
   role      FamilyRole
   note      String?
-  expiresAt DateTime  @map("expires_at")
-  maxUses   Int       @default(1) @map("max_uses")
-  usedCount Int       @default(0) @map("used_count")
-  createdBy String    @map("created_by")
-  createdAt DateTime  @default(now()) @map("created_at")
-  revokedAt DateTime? @map("revoked_at")
+  expiresAt DateTime   @map("expires_at")
+  maxUses   Int        @default(1) @map("max_uses")
+  usedCount Int        @default(0) @map("used_count")
+  createdBy String     @map("created_by")
+  createdAt DateTime   @default(now()) @map("created_at")
+  revokedAt DateTime?  @map("revoked_at")
 
   family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
 
@@ -236,13 +263,13 @@ model Item {
   updatedAt         DateTime   @updatedAt @map("updated_at")
   deletedAt         DateTime?  @map("deleted_at")
 
-  family  Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
-  creator User         @relation(fields: [createdBy], references: [id])
-  people  ItemPerson[]
-  media   ItemMedia[]
-  notes   ItemNote[]
-  shares  ItemShare[]
-  versions ItemVersion[]
+  family     Family          @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  creator    User            @relation(fields: [createdBy], references: [id])
+  people     ItemPerson[]
+  media      ItemMedia[]
+  notes      ItemNote[]
+  shares     ItemShare[]
+  versions   ItemVersion[]
   shareLinks ShareLinkItem[]
 
   @@index([familyId, status, category])
@@ -266,34 +293,40 @@ model ItemPerson {
 }
 
 model ItemMedia {
-  id          String      @id @default(cuid())
-  itemId      String      @map("item_id")
-  kind        MediaKind
-  status      MediaStatus @default(processing)
-  storageKey  String      @map("storage_key")
-  sha256      String
-  mimeType    String      @map("mime_type")
-  byteSize    BigInt      @map("byte_size")
-  width       Int?
-  height      Int?
-  durationMs  Int?        @map("duration_ms")
-  thumbKey    String?     @map("thumb_key")
-  largeKey    String?     @map("large_key")
-  transcodeKey String?    @map("transcode_key")
-  waveformKey String?     @map("waveform_key")
-  originalName String     @map("original_name")
-  caption     String?
-  transcript  String?
-  sortOrder   Int         @default(0) @map("sort_order")
-  lastError   String?     @map("last_error")
-  createdBy   String      @map("created_by")
-  createdAt   DateTime    @default(now()) @map("created_at")
-  deletedAt   DateTime?   @map("deleted_at")
+  id            String      @id @default(cuid())
+  itemId        String      @map("item_id")
+  kind          MediaKind
+  status        MediaStatus @default(processing)
+  storageKey    String      @map("storage_key")
+  sha256        String
+  mimeType      String      @map("mime_type")
+  byteSize      BigInt      @map("byte_size")
+  width         Int?
+  height        Int?
+  durationMs    Int?        @map("duration_ms")
+  thumbKey      String?     @map("thumb_key")
+  largeKey      String?     @map("large_key")
+  transcodeKey  String?     @map("transcode_key")
+  waveformKey   String?     @map("waveform_key")
+  originalName  String      @map("original_name")
+  caption       String?
+  transcript    String?
+  sortOrder     Int         @default(0) @map("sort_order")
+  tier          StorageTier @default(hot)
+  tierChangedAt DateTime?   @map("tier_changed_at")
+  lastError     String?     @map("last_error")
+  createdBy     String      @map("created_by")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+  deletedAt     DateTime?   @map("deleted_at")
+
+  cleanupItems CleanupItem[]
 
   item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
   @@index([itemId, sortOrder])
   @@index([sha256])
+  @@index([tier])
   @@map("item_media")
 }
 
@@ -443,4 +476,95 @@ model Setting {
 
   @@id([familyId, key])
   @@map("settings")
+}
+
+/// 家庭总配额（字节）。一行对应一个家庭；不存在时回退到环境变量默认值。
+model StorageQuota {
+  familyId   String   @id @map("family_id")
+  /// null 表示不限制
+  quotaBytes BigInt?  @map("quota_bytes")
+  /// 配额接近上限的告警线（0~1），达到后上传返回警告
+  warnRatio  Decimal  @default(0.9) @map("warn_ratio") @db.Decimal(4, 3)
+  updatedBy  String   @map("updated_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@map("storage_quotas")
+}
+
+/// 按媒体类型制定的保留与冷热分层策略。每个家庭 × 每种媒体一行，缺省由系统默认策略补齐。
+model StoragePolicy {
+  id           String    @id @default(cuid())
+  familyId     String    @map("family_id")
+  kind         MediaKind
+  /// 热层保留天数：超过该时长且条目已归档/长期未动的媒体降到冷层。null=永不降级
+  hotDays      Int?      @map("hot_days")
+  /// 总保留天数：超过后彻底删除原始媒体（保留条目与文字）。null=永久保留
+  maxAgeDays   Int?      @map("max_age_days")
+  /// 是否只在条目已归档时才允许降级/清理（默认 true，保护正在使用的媒体）
+  onlyArchived Boolean   @default(true) @map("only_archived")
+  enabled      Boolean   @default(true)
+  updatedBy    String    @map("updated_by")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, kind])
+  @@map("storage_policies")
+}
+
+/// 一次清理（预演或实际执行）的完整记录。预演与确认共用同一行，保证「看到的影响面」与「执行结果」可对账。
+model CleanupRun {
+  id             String        @id @default(cuid())
+  familyId       String        @map("family_id")
+  status         CleanupStatus @default(preview)
+  /// 生成该计划时使用的策略快照与判定截止时间，确认时不再重算——避免「预演一套、执行另一套」
+  policySnapshot Json          @map("policy_snapshot")
+  cutoffAt       DateTime      @map("cutoff_at")
+  totalFiles     Int           @default(0) @map("total_files")
+  totalBytes     BigInt        @default(0) @map("total_bytes")
+  tierFiles      Int           @default(0) @map("tier_files")
+  tierBytes      BigInt        @default(0) @map("tier_bytes")
+  deleteFiles    Int           @default(0) @map("delete_files")
+  deleteBytes    BigInt        @default(0) @map("delete_bytes")
+  /// 执行结果明细（每文件成功/失败/跳过），用于事后核对
+  result         Json?
+  note           String?
+  createdBy      String        @map("created_by")
+  approvedBy     String?       @map("approved_by")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  expiresAt      DateTime?     @map("expires_at")
+  executedAt     DateTime?     @map("executed_at")
+  canceledAt     DateTime?     @map("canceled_at")
+
+  family Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  items  CleanupItem[]
+
+  @@index([familyId, status, createdAt])
+  @@map("cleanup_runs")
+}
+
+/// 清理计划中的单个受影响媒体。预演时写入，执行时逐条更新状态。
+model CleanupItem {
+  id       String        @id @default(cuid())
+  runId    String        @map("run_id")
+  mediaId  String        @map("media_id")
+  itemId   String        @map("item_id")
+  kind     MediaKind
+  action   CleanupAction
+  byteSize BigInt        @map("byte_size")
+  reason   String
+  /// pending（待执行）/ done / failed / skipped（如文件已不存在、已被更早日清理）
+  state    String        @default("pending")
+  detail   String?
+
+  run   CleanupRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  media ItemMedia  @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, mediaId])
+  @@index([runId])
+  @@map("cleanup_items")
 }

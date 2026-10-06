@@ -30,6 +30,7 @@ export function toMediaDto(m: ItemMedia, familyId: string) {
     sortOrder: m.sortOrder,
     hasThumb: Boolean(m.thumbKey),
     hasWaveform: Boolean(m.waveformKey),
+    tier: m.tier,
     // 播放统一走转码产物（Safari 对 webm/opus 支持不一），没有转码时回落到原始文件
     rawUrl: mediaUrl(familyId, m.id, m.transcodeKey ? 'download' : 'raw'),
     thumbUrl: m.thumbKey ? mediaUrl(familyId, m.id, 'thumb') : null,

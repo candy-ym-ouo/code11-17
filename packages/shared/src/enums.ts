@@ -83,11 +83,28 @@ export const JOB_TYPES = [
   'export_build',
   'trash_purge',
   'storage_gc',
+  'storage_tier',
+  'storage_purge',
+  'media_restore',
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
 export const JOB_STATUSES = ['queued', 'running', 'done', 'failed'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export const STORAGE_TIERS = ['hot', 'cold'] as const;
+export type StorageTier = (typeof STORAGE_TIERS)[number];
+
+export const STORAGE_TIER_LABELS: Record<StorageTier, string> = {
+  hot: '热层',
+  cold: '冷层',
+};
+
+export const CLEANUP_ACTIONS = ['tier', 'delete'] as const;
+export type CleanupAction = (typeof CLEANUP_ACTIONS)[number];
+
+export const CLEANUP_STATUS = ['preview', 'approved', 'done', 'canceled', 'expired'] as const;
+export type CleanupStatus = (typeof CLEANUP_STATUS)[number];
 
 export const AUDIT_ACTIONS = [
   'auth.register',
@@ -123,6 +140,15 @@ export const AUDIT_ACTIONS = [
   'share.revoke',
   'export.create',
   'export.download',
+  'storage.quota_update',
+  'storage.policy_update',
+  'storage.cleanup_preview',
+  'storage.cleanup_approve',
+  'storage.cleanup_cancel',
+  'storage.cleanup_run',
+  'storage.tier',
+  'storage.restore',
+  'storage.purge',
   'access.denied',
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

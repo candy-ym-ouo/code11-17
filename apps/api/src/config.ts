@@ -55,6 +55,24 @@ const envSchema = z.object({
   TRASH_RETENTION_DAYS: z.coerce.number().int().min(1).default(30),
   EXPORT_RETENTION_DAYS: z.coerce.number().int().min(1).default(7),
 
+  // ---- 存储配额与冷热分层（家庭未单独配置时的系统默认值）----
+  /** 家庭默认总配额（GB），0 = 不限制 */
+  DEFAULT_STORAGE_QUOTA_GB: z.coerce.number().min(0).max(1_000_000).default(0),
+  /** 预演计划保留多久后必须重新预演（小时），防止照过期计划执行 */
+  CLEANUP_PREVIEW_TTL_HOURS: z.coerce.number().int().min(1).max(24 * 30).default(24),
+  /** 冷层目录（相对路径相对仓库根；建议挂到便宜大盘/移动硬盘） */
+  COLD_STORAGE_ROOT: z.string().default('./data/cold'),
+  /** 冷层媒体被访问后是否自动取回热层 */
+  COLD_RESTORE_ON_ACCESS: boolish(true),
+  /** 默认热层保留天数（天），超过且条目已归档则降冷 */
+  POLICY_IMAGE_HOT_DAYS: z.coerce.number().int().min(0).default(365),
+  POLICY_AUDIO_HOT_DAYS: z.coerce.number().int().min(0).default(730),
+  POLICY_DOCUMENT_HOT_DAYS: z.coerce.number().int().min(0).default(1095),
+  /** 默认总保留天数，0 = 永久 */
+  POLICY_IMAGE_MAX_AGE_DAYS: z.coerce.number().int().min(0).default(0),
+  POLICY_AUDIO_MAX_AGE_DAYS: z.coerce.number().int().min(0).default(0),
+  POLICY_DOCUMENT_MAX_AGE_DAYS: z.coerce.number().int().min(0).default(0),
+
   PUBLIC_SIGNUP: boolish(false),
   SERVE_WEB: boolish(true),
   WEB_DIST: z.string().default('./apps/web/dist'),
@@ -78,6 +96,7 @@ export const config = {
   ...env,
   COOKIE_SECURE: env.COOKIE_SECURE,
   STORAGE_ROOT: abs(env.STORAGE_ROOT),
+  COLD_STORAGE_ROOT: abs(env.COLD_STORAGE_ROOT),
   EXPORT_ROOT: abs(env.EXPORT_ROOT),
   BACKUP_ROOT: abs(env.BACKUP_ROOT),
   WEB_DIST: abs(env.WEB_DIST),
